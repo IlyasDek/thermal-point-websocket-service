@@ -49,15 +49,30 @@ public class ThermalPointService {
                 ForestryDto forestryDto = getForestryByToken(token);
 
                 if (forestryDto != null) {
-                    Long forestryId = forestryDto.getId();
-                    List<ThermalPoint> thermalPoints = getThermalPointsByForestryId(forestryId);
+                    logger.info("Forestry found for token {}: {}", token, forestryDto.getName());
 
-                    if (!thermalPoints.isEmpty()) {
-                        logger.info("Sending {} thermal points for token: {}", thermalPoints.size(), token);
-                        messagingTemplate.convertAndSend("/topic/thermal-points/" + token, thermalPoints);
+                    if ("Казахстан".equals(forestryDto.getName())) {
+                        // Если лесничество - Казахстан, вернуть все термальные точки
+                        List<ThermalPoint> thermalPoints = getAllThermalPoints();
+                        if (!thermalPoints.isEmpty()) {
+                            logger.info("Sending {} thermal points for Kazakhstan", thermalPoints.size());
+                            messagingTemplate.convertAndSend("/topic/thermal-points/" + token, thermalPoints);
+                        } else {
+                            logger.info("No thermal points found for Kazakhstan");
+                            messagingTemplate.convertAndSend("/topic/thermal-points/" + token, "No thermal points found for Kazakhstan.");
+                        }
                     } else {
-                        logger.info("No thermal points found for token: {}", token);
-                        messagingTemplate.convertAndSend("/topic/thermal-points/" + token, "No thermal points found for this forestry.");
+                        Long forestryId = forestryDto.getId();
+                        logger.info("Forestry ID for token {}: {}", token, forestryId);
+
+                        List<ThermalPoint> thermalPoints = getThermalPointsByForestryId(forestryId);
+                        if (!thermalPoints.isEmpty()) {
+                            logger.info("Sending {} thermal points for token: {}", thermalPoints.size(), token);
+                            messagingTemplate.convertAndSend("/topic/thermal-points/" + token, thermalPoints);
+                        } else {
+                            logger.info("No thermal points found for token: {}", token);
+                            messagingTemplate.convertAndSend("/topic/thermal-points/" + token, "No thermal points found for this forestry.");
+                        }
                     }
                 } else {
                     logger.info("No forestry found for token: {}", token);
@@ -69,6 +84,7 @@ public class ThermalPointService {
             }
         });
     }
+
 
     public ForestryDto getForestryByToken(String token) {
         String url = "http://geo-forestry-app:8083/api/forestry/" + token;
@@ -87,6 +103,31 @@ public class ThermalPointService {
         }
 
         return apiResponse.getForestry();
+    }
+
+    public List<ThermalPoint> getAllThermalPoints() {
+        String sql = "SELECT id, latitude, longitude, brightness, scan, track, acq_date, acq_time, local_time, satellite, confidence, version, bright_t31, frp, daynight " +
+                "FROM fires";
+        List<ThermalPoint> thermalPoints = jdbcTemplate.query(sql, (rs, rowNum) -> new ThermalPoint(
+                rs.getLong("id"),
+                rs.getDouble("latitude"),
+                rs.getDouble("longitude"),
+                rs.getDouble("brightness"),
+                rs.getDouble("scan"),
+                rs.getDouble("track"),
+                rs.getDate("acq_date").toLocalDate(),
+                rs.getTime("acq_time") != null ? rs.getTime("acq_time").toLocalTime() : null,
+                rs.getTime("local_time") != null ? rs.getTime("local_time").toLocalTime() : null,
+                rs.getString("satellite"),
+                rs.getString("confidence"),
+                rs.getString("version"),
+                rs.getDouble("bright_t31"),
+                rs.getDouble("frp"),
+                rs.getString("daynight"),
+                null // forestry_id is not relevant in this case
+        ));
+        logger.info("Total thermal points: {}", thermalPoints.size());
+        return thermalPoints;
     }
 
     public List<ThermalPoint> getThermalPointsByForestryId(Long forestryId) {
