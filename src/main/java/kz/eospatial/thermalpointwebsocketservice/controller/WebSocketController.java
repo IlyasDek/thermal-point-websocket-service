@@ -1,7 +1,5 @@
 package kz.eospatial.thermalpointwebsocketservice.controller;
 
-import kz.eospatial.thermalpointwebsocketservice.dto.ForestryDto;
-import kz.eospatial.thermalpointwebsocketservice.model.ThermalPoint;
 import kz.eospatial.thermalpointwebsocketservice.service.ThermalPointService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -9,16 +7,14 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.event.EventListener;
 import org.springframework.messaging.handler.annotation.MessageMapping;
 import org.springframework.messaging.simp.SimpMessageHeaderAccessor;
-import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.messaging.simp.annotation.SendToUser;
 import org.springframework.messaging.simp.stomp.StompHeaderAccessor;
 import org.springframework.stereotype.Controller;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.socket.messaging.SessionDisconnectEvent;
-;
-import java.util.List;
-import java.util.Map;
+
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 @Controller
 public class WebSocketController {
@@ -28,10 +24,7 @@ public class WebSocketController {
     @Autowired
     private ThermalPointService thermalPointService;
 
-    @Autowired
-    private SimpMessagingTemplate messagingTemplate;
-
-    private final Map<String, String> sessionTokenMap = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, String> sessionTokenMap = new ConcurrentHashMap<>();
 
     @MessageMapping("/thermal-points")
     public void registerClient(String token, SimpMessageHeaderAccessor headerAccessor) {
@@ -39,7 +32,6 @@ public class WebSocketController {
         sessionTokenMap.put(sessionId, token);
         thermalPointService.addTokenToCache(token);
         logger.info("Received token: {} for session: {}", token, sessionId);
-        messagingTemplate.convertAndSend("/topic/thermal-points/" + token, "Registered for updates.");
     }
 
     @EventListener

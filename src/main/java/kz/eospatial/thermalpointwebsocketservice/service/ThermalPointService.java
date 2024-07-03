@@ -4,14 +4,18 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import kz.eospatial.thermalpointwebsocketservice.dto.ApiResponse;
 import kz.eospatial.thermalpointwebsocketservice.dto.ForestryDto;
+import kz.eospatial.thermalpointwebsocketservice.exceptions.ForestryNotFoundException;
+import kz.eospatial.thermalpointwebsocketservice.exceptions.TokenExpiredException;
 import kz.eospatial.thermalpointwebsocketservice.model.ThermalPoint;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
 
 import java.util.List;
@@ -52,7 +56,7 @@ public class ThermalPointService {
                     logger.info("Forestry found for token {}: {}", token, forestryDto.getName());
 
                     if ("Казахстан".equals(forestryDto.getName())) {
-                        // Если лесничество - Казахстан, вернуть все термальные точки
+                        // Если лесничество с именем "Казахстан", вернуть все термальные точки в бд
                         List<ThermalPoint> thermalPoints = getAllThermalPoints();
                         if (!thermalPoints.isEmpty()) {
                             logger.info("Sending {} thermal points for Kazakhstan", thermalPoints.size());
@@ -78,6 +82,12 @@ public class ThermalPointService {
                     logger.info("No forestry found for token: {}", token);
                     messagingTemplate.convertAndSend("/topic/thermal-points/" + token, "No forestry found for this token.");
                 }
+            } catch (TokenExpiredException e) {
+                logger.warn("Token has expired for token: {}", token);
+                messagingTemplate.convertAndSend("/topic/thermal-points/" + token, "Token has expired.");
+            } catch (ForestryNotFoundException e) {
+                logger.warn("Forestry not found for token: {}", token);
+                messagingTemplate.convertAndSend("/topic/thermal-points/" + token, "No forestry found for this token.");
             } catch (Exception e) {
                 logger.error("Error while sending thermal points for token: {}", token, e);
                 messagingTemplate.convertAndSend("/topic/thermal-points/" + token, "Error while sending thermal points: " + e.getMessage());
@@ -85,24 +95,32 @@ public class ThermalPointService {
         });
     }
 
-
     public ForestryDto getForestryByToken(String token) {
         String url = "http://geo-forestry-app:8083/api/forestry/" + token;
-        String jsonResponse = restTemplate.getForObject(url, String.class);
-        logger.debug("JSON Response for token {}: {}", token, jsonResponse);
-
-        ObjectMapper objectMapper = new ObjectMapper();
-        objectMapper.registerModule(new JavaTimeModule());
-
-        ApiResponse apiResponse;
         try {
-            apiResponse = objectMapper.readValue(jsonResponse, ApiResponse.class);
-        } catch (Exception e) {
-            logger.error("Error parsing JSON response for token {}: {}", token, e.getMessage());
-            throw new RuntimeException("Error parsing JSON response", e);
-        }
+            String jsonResponse = restTemplate.getForObject(url, String.class);
+            logger.debug("JSON Response for token {}: {}", token, jsonResponse);
 
-        return apiResponse.getForestry();
+            ObjectMapper objectMapper = new ObjectMapper();
+            objectMapper.registerModule(new JavaTimeModule());
+
+            ApiResponse apiResponse = objectMapper.readValue(jsonResponse, ApiResponse.class);
+            return apiResponse.getForestry();
+        } catch (HttpClientErrorException e) {
+            if (e.getStatusCode() == HttpStatus.BAD_REQUEST) {
+                logger.warn("Token validation failed for token: {}", token);
+                throw new TokenExpiredException("Token validation failed: " + e.getResponseBodyAsString());
+            } else if (e.getStatusCode() == HttpStatus.NOT_FOUND) {
+                logger.warn("No forestry found for token: {}", token);
+                throw new ForestryNotFoundException("No forestry found: " + e.getResponseBodyAsString());
+            } else {
+                logger.error("Error retrieving forestry for token: {}", token, e);
+                throw new RuntimeException("Error retrieving forestry", e);
+            }
+        } catch (Exception e) {
+            logger.error("Error retrieving forestry for token: {}", token, e);
+            throw new RuntimeException("Error retrieving forestry", e);
+        }
     }
 
     public List<ThermalPoint> getAllThermalPoints() {
@@ -131,7 +149,7 @@ public class ThermalPointService {
     }
 
     public List<ThermalPoint> getThermalPointsByForestryId(Long forestryId) {
-        String sql = "SELECT f.id, f.latitude, f.longitude, f.brightness, f.scan, f.track, f.acq_date, f.acq_time, f.local_time, f.satellite, f.confidence, f.version, f.bright_t31, f.frp, f.daynight, r.forestry_id " +
+        String sql = "SELECT f.id, f.latitude, f.longitude, f.brightness, f.scan, f.track, f.acq_date, f.acq_time, f.local_time, f.satellite, f.confidence, f.version, f.bright_t31, f.frp, daynight, r.forestry_id " +
                 "FROM fires f " +
                 "JOIN fire_forest_relations r ON f.id = r.fire_id " +
                 "WHERE r.forestry_id = ?";
