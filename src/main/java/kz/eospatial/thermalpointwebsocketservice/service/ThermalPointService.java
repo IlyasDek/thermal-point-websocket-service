@@ -5,6 +5,7 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import kz.eospatial.thermalpointwebsocketservice.dto.ApiResponse;
 import kz.eospatial.thermalpointwebsocketservice.dto.ForestryDto;
 import kz.eospatial.thermalpointwebsocketservice.exceptions.ForestryNotFoundException;
+import kz.eospatial.thermalpointwebsocketservice.exceptions.InvalidTokenException;
 import kz.eospatial.thermalpointwebsocketservice.exceptions.TokenExpiredException;
 import kz.eospatial.thermalpointwebsocketservice.model.ThermalPoint;
 import org.slf4j.Logger;
@@ -13,6 +14,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpClientErrorException;
@@ -20,6 +22,7 @@ import org.springframework.web.client.RestTemplate;
 
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 
 @Service
@@ -36,58 +39,56 @@ public class ThermalPointService {
     @Autowired
     private SimpMessagingTemplate messagingTemplate;
 
-    private final Map<String, String> tokenCache = new ConcurrentHashMap<>();
+    private final Map<String, ForestryDto> tokenCache = new ConcurrentHashMap<>();
 
-    public void addTokenToCache(String token) {
-        tokenCache.put(token, token);
+    @Async
+    public CompletableFuture<ForestryDto> addTokenToCacheAsync(String token) {
+        if (token == null || token.isEmpty()) {
+            throw new InvalidTokenException("Received empty or null token");
+        }
+
+        ForestryDto forestryDto = getForestryByToken(token);
+        if (forestryDto != null) {
+            forestryDto.setToken(token); // Сохраняем токен в DTO
+            tokenCache.put(token, forestryDto);
+            logger.info("Token added to cache asynchronously: {}", token);
+        } else {
+            logger.warn("Invalid token: {}", token);
+        }
+        return CompletableFuture.completedFuture(forestryDto);
     }
 
-    public void removeTokenFromCache(String token) {
+    @Async
+    public CompletableFuture<Void> removeTokenFromCacheAsync(String token) {
         tokenCache.remove(token);
+        logger.info("Token removed from cache asynchronously: {}", token);
+        return CompletableFuture.completedFuture(null);
     }
 
     @Scheduled(fixedRate = 3000)
     public void sendThermalPointsToClients() {
-        tokenCache.keySet().forEach(token -> {
+        tokenCache.forEach((token, forestryDto) -> {
             try {
-                ForestryDto forestryDto = getForestryByToken(token);
-
-                if (forestryDto != null) {
-                    logger.info("Forestry found for token {}: {}", token, forestryDto.getName());
-
-                    if ("Казахстан".equals(forestryDto.getName())) {
-                        // Если лесничество с именем "Казахстан", вернуть все термальные точки в бд
-                        List<ThermalPoint> thermalPoints = getAllThermalPoints();
-                        if (!thermalPoints.isEmpty()) {
-                            logger.info("Sending {} thermal points for Kazakhstan", thermalPoints.size());
-                            messagingTemplate.convertAndSend("/topic/thermal-points/" + token, thermalPoints);
-                        } else {
-                            logger.info("No thermal points found for Kazakhstan");
-                            messagingTemplate.convertAndSend("/topic/thermal-points/" + token, "No thermal points found for Kazakhstan.");
-                        }
+                if ("Казахстан".equals(forestryDto.getName())) {
+                    List<ThermalPoint> thermalPoints = getAllThermalPoints();
+                    if (!thermalPoints.isEmpty()) {
+                        logger.info("Sending {} thermal points for Kazakhstan", thermalPoints.size());
+                        messagingTemplate.convertAndSend("/topic/thermal-points/" + token, thermalPoints);
                     } else {
-                        Long forestryId = forestryDto.getId();
-                        logger.info("Forestry ID for token {}: {}", token, forestryId);
-
-                        List<ThermalPoint> thermalPoints = getThermalPointsByForestryId(forestryId);
-                        if (!thermalPoints.isEmpty()) {
-                            logger.info("Sending {} thermal points for token: {}", thermalPoints.size(), token);
-                            messagingTemplate.convertAndSend("/topic/thermal-points/" + token, thermalPoints);
-                        } else {
-                            logger.info("No thermal points found for token: {}", token);
-                            messagingTemplate.convertAndSend("/topic/thermal-points/" + token, "No thermal points found for this forestry.");
-                        }
+                        logger.info("No thermal points found for Kazakhstan");
+                        messagingTemplate.convertAndSend("/topic/thermal-points/" + token, "No thermal points found for Kazakhstan.");
                     }
                 } else {
-                    logger.info("No forestry found for token: {}", token);
-                    messagingTemplate.convertAndSend("/topic/thermal-points/" + token, "No forestry found for this token.");
+                    Long forestryId = forestryDto.getId();
+                    List<ThermalPoint> thermalPoints = getThermalPointsByForestryId(forestryId);
+                    if (!thermalPoints.isEmpty()) {
+                        logger.info("Sending {} thermal points for token: {}", thermalPoints.size(), token);
+                        messagingTemplate.convertAndSend("/topic/thermal-points/" + token, thermalPoints);
+                    } else {
+                        logger.info("No thermal points found for token: {}", token);
+                        messagingTemplate.convertAndSend("/topic/thermal-points/" + token, "No thermal points found for this forestry.");
+                    }
                 }
-            } catch (TokenExpiredException e) {
-                logger.warn("Token has expired for token: {}", token);
-                messagingTemplate.convertAndSend("/topic/thermal-points/" + token, "Token has expired.");
-            } catch (ForestryNotFoundException e) {
-                logger.warn("Forestry not found for token: {}", token);
-                messagingTemplate.convertAndSend("/topic/thermal-points/" + token, "No forestry found for this token.");
             } catch (Exception e) {
                 logger.error("Error while sending thermal points for token: {}", token, e);
                 messagingTemplate.convertAndSend("/topic/thermal-points/" + token, "Error while sending thermal points: " + e.getMessage());
@@ -96,7 +97,8 @@ public class ThermalPointService {
     }
 
     public ForestryDto getForestryByToken(String token) {
-        String url = "http://geo-forestry-app:8083/api/forestry/" + token;
+        String url = "http://localhost:8083/api/forestry/" + token;
+//        String url = "http://geo-forestry-app:8083/api/forestry/" + token;
         try {
             String jsonResponse = restTemplate.getForObject(url, String.class);
             logger.debug("JSON Response for token {}: {}", token, jsonResponse);
