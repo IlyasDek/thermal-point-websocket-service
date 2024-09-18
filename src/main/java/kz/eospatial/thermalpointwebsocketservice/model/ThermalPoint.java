@@ -22,6 +22,7 @@ public class ThermalPoint {
     private String satellite;
     private String confidence;
     private String version;
+    @Column(name = "bright_t31")
     private double brightT31;
     private double frp;
     private String daynight;
